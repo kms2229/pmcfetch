@@ -1,0 +1,48 @@
+#!/bin/bash -l
+#
+# Example: pull one namespace per array task on an SGE/UGE cluster.
+# Submit with:  qsub -t 1-4 download_array.qsub   (one task per NAMESPACES entry)
+#
+# $SGE_TASK_ID is read automatically by pmcfetch and used as a 1-based index
+# into --namespaces, so no bash array arithmetic is needed.
+#
+# Edit PROJECT, BASE, VENV and NAMESPACES for your site, and add any
+# parallel-environment or memory requests your scheduler expects.
+#
+#$ -P your_project
+#$ -j y
+#$ -N pmcfetch
+#$ -l h_rt=24:00:00
+
+set -euo pipefail
+
+BASE="${BASE:-$HOME/pmc}"
+VENV="${VENV:-$BASE/.venv}"
+CORPUS="${CORPUS:-$BASE/corpus.json}"
+OUT="${OUT:-$BASE/pdfs}"
+NAMESPACES="${NAMESPACES:-general,cardiology,oncology,neurology}"
+
+module load python3 2>/dev/null || true
+source "$VENV/bin/activate"
+
+echo "=============================================="
+echo "Task ID   : ${SGE_TASK_ID:-unset}"
+echo "Started   : $(date)"
+echo "=============================================="
+
+# The PMC S3 bucket is not rate limited, so --rps 0 and wide --workers.
+# `|| status=$?` stops `set -e` from skipping the footer when some articles fail.
+status=0
+pmcfetch download \
+  --corpus     "$CORPUS" \
+  --out        "$OUT" \
+  --namespaces "$NAMESPACES" \
+  --workers    16 \
+  --rps        0 \
+  --failed-log "$OUT/failed_task${SGE_TASK_ID:-0}.txt" || status=$?
+
+echo "=============================================="
+echo "Task ID   : ${SGE_TASK_ID:-unset} exit=$status"
+echo "Finished  : $(date)"
+echo "=============================================="
+exit $status

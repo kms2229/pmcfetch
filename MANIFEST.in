@@ -1,0 +1,2 @@
+# setuptools ships tests/test_*.py in the sdist by default, but not the conftest they import.
+recursive-include tests *.py
