@@ -91,9 +91,10 @@ has no effect) and `--workers` can go wide; throughput is bound by your bandwidt
 ## Deployment
 
 - **Azure** — VM or Container Instances with Blob persistence, plus cost notes.
-  See `docs/azure.md` in the repository.
+  See [`docs/azure.md`](https://github.com/kms2229/pmcfetch/blob/main/docs/azure.md).
 - **HPC / SGE** — `--task-id` (defaulting to `$SGE_TASK_ID`) selects a namespace
-  by 1-based index. See `examples/sge/download_array.qsub` in the repository.
+  by 1-based index. See
+  [`examples/sge/download_array.qsub`](https://github.com/kms2229/pmcfetch/blob/main/examples/sge/download_array.qsub).
 
 Nothing in the library is platform-specific; those are examples.
 
