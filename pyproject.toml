@@ -38,7 +38,9 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/kms2229/pmcfetch"
+Source = "https://github.com/kms2229/pmcfetch"
 Issues = "https://github.com/kms2229/pmcfetch/issues"
+Changelog = "https://github.com/kms2229/pmcfetch/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pmcfetch = "pmcfetch.cli:main"
