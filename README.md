@@ -1,17 +1,39 @@
 # pmcfetch
 
-Targeted PDF retrieval from the **PMC Open Access Subset**, with resume, retries,
-atomic writes, and namespace-aware batch layout. Start from a list of PMC ids,
-or from a keyword search. Zero dependencies.
+Download open-access research papers as PDFs from **PubMed Central**, straight
+from the PMC Open Access Subset on AWS, with resume, retries and atomic writes.
+Requires Python 3.10+, and nothing outside the standard library.
 
 ```bash
 pip install pmcfetch
-pmcfetch search "burn scar"                      # how many open-access papers match?
-pmcfetch search "burn scar" --download 50        # fetch the 50 most relevant
-pmcfetch download --corpus corpus.json --out pdfs/ --workers 16
 ```
 
-Requires Python 3.10+. Nothing outside the standard library.
+## What it does
+
+**1. Download papers by id.** You already know which papers you want: list their
+PMC ids in a text file, one per line (like `PMC10007932`).
+
+```bash
+pmcfetch download --corpus ids.txt --out pdfs/
+```
+
+**2. Search by keyword.** See how many open-access papers match before
+downloading anything.
+
+```bash
+pmcfetch search "burn scar"
+# [pmcfetch] 20,349 open-access article(s) match 'burn scar'
+```
+
+**3. Download the matches.** Take all of them, or only as many as you want.
+
+```bash
+pmcfetch search "burn scar" --download 50     # the 50 most relevant
+pmcfetch search "burn scar" --download all    # every match
+```
+
+In a terminal, `pmcfetch search` asks how many to download right after showing
+the count, so steps 2 and 3 can happen in one go.
 
 ## Why
 
