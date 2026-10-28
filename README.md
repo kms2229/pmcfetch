@@ -8,7 +8,7 @@ or from a keyword search. Zero dependencies.
 pip install pmcfetch
 pmcfetch search "burn scar"                      # how many open-access papers match?
 pmcfetch search "burn scar" --download 50        # fetch the 50 most relevant
-pmcfetch download --corpus corpus.json --out pdfs/ --workers 16 --rps 0
+pmcfetch download --corpus corpus.json --out pdfs/ --workers 16
 ```
 
 Requires Python 3.10+. Nothing outside the standard library.
@@ -89,14 +89,18 @@ with S3OpenAccessClient() as client:
 pmcfetch search "wound healing AND diabetic foot"
 
 # download some or all of them, without the question
-pmcfetch search "burn scar" --download 100 --out pdfs/ --rps 0
-pmcfetch search "burn scar" --download all --namespace burns --save burns.json --rps 0
+pmcfetch search "burn scar" --download 100 --out pdfs/
+pmcfetch search "burn scar" --download all --namespace burns
+
+# or save every match now and download later, e.g. in an HPC array job
+pmcfetch search "burn scar" --namespace burns --save burns.json
+pmcfetch download --corpus burns.json --out pdfs/
 
 # what's in a corpus file?
 pmcfetch namespaces --corpus corpus.json
 
 # pull one namespace
-pmcfetch download --corpus corpus.json --out pdfs/ --namespace cardiology --workers 16 --rps 0
+pmcfetch download --corpus corpus.json --out pdfs/ --namespace cardiology --workers 16
 
 # dry run, no requests
 pmcfetch download --corpus corpus.json --out pdfs/ --limit 20 --dry-run
@@ -107,16 +111,19 @@ pmcfetch download --corpus pdfs/failed.txt --out pdfs/ --flat
 
 Exit code is `1` when any article failed, `0` otherwise — so a batch job fails
 loudly instead of silently producing a short corpus. Bad arguments or an
-unreadable corpus file exit `2`, and Ctrl-C exits `130`.
+unreadable corpus file exit `2`, and Ctrl-C exits `130`. With `--json`, stdout
+carries only the JSON summary and progress goes to stderr, so it pipes cleanly.
 
-S3 has no rate limit, so `--rps 0` switches pacing off entirely (`--jitter` then
-has no effect) and `--workers` can go wide; throughput is bound by your bandwidth.
+S3 has no rate limit, so downloads are not paced by default and `--workers` can
+go wide; throughput is bound by your bandwidth. `--rps N` caps requests per
+second across all workers if you want to go easier on a shared link.
 
 `search` takes PMC's search syntax: field tags (`smith j[author]`), date ranges
 (`2020:2025[pdat]`), `AND`/`OR`/`NOT`. It prints how NCBI read the query and warns
 about words it dropped. `--sort relevance` (the default) or `--sort newest` picks
-which papers come first when you take fewer than all, and `--save` writes the
-chosen ids to a corpus file for `pmcfetch download`, for example in an HPC array job.
+which papers come first when you take fewer than all. `--save` writes the chosen
+ids to a corpus file that `pmcfetch download` reads; without `--download`, it
+saves every match and downloads none.
 
 ## Deployment
 
@@ -165,8 +172,9 @@ bad key can't abort a 20k-article batch.
 - **Any object implementing `fetch_pdf(pmcid) -> bytes`** satisfies the
   `PdfSource` protocol and works with `download_many`.
 - **Search counts only open-access articles** (`"open access"[filter]`), the
-  ones the bucket holds with their PDFs. Around 99% of them have an article PDF;
-  the rest fail with `PDFNotAvailableError` like any other run.
+  ones the bucket holds. In a sample of 800 matches, 98% had an article PDF; the
+  rest are licensed for XML and text only, and fail with `PDFNotAvailableError`
+  like any other run.
 - **Search has no 10,000 cap.** NCBI returns at most 9,999 ids per query, so
   larger result sets are collected by splitting the query into PMC id ranges.
   NCBI ranks only the first 9,999 by relevance; the rest follow newest first.

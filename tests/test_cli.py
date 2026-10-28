@@ -50,6 +50,52 @@ def test_dry_run_makes_no_requests_and_exits_clean(corpus_file, tmp_path, capsys
     assert not (tmp_path / "pdfs").exists()
 
 
+def test_dry_run_json_lists_what_would_be_fetched(corpus_file, tmp_path, capsys):
+    argv = ["download", "--corpus", str(corpus_file), "--out", str(tmp_path / "pdfs")]
+    assert main(argv + ["--namespace", "cardiology", "--dry-run", "--json"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert (plan["total"], plan["dry_run"]) == (2, True)
+    assert [a["pmcid"] for a in plan["would_fetch"]] == ["PMC1", "PMC2"]
+    assert not (tmp_path / "pdfs").exists()
+
+
+@pytest.fixture
+def fake_downloads(monkeypatch):
+    """The CLI's downloader swapped for one that reports progress like the real one."""
+    seen = {"records": None}
+
+    def _download_many(records, dest_root, progress=None, **kwargs):
+        seen["records"] = list(records)
+        seen["dest_root"] = dest_root
+        results = [DownloadResult(r.pmcid, Outcome.DOWNLOADED) for r in records]
+        for i, res in enumerate(results, 1):
+            if progress:
+                progress(res, i, len(results))
+        return BatchReport(results)
+
+    monkeypatch.setattr(cli, "download_many", _download_many)
+    return seen
+
+
+def test_download_json_keeps_progress_off_stdout(corpus_file, fake_downloads, tmp_path, capsys):
+    assert main(["download", "--corpus", str(corpus_file), "--out", str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "namespace": "ALL",
+        "total": 3,
+        "downloaded": 3,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert "[3/3] ok" in captured.err
+
+
+def test_download_json_with_nothing_to_fetch_still_prints_json(corpus_file, tmp_path, capsys):
+    argv = ["download", "--corpus", str(corpus_file), "--out", str(tmp_path), "--namespace", "nephrology"]
+    assert main(argv + ["--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 0
+
+
 def _args(**kw):
     base = {"namespace": None, "task_id": None, "namespaces": ""}
     base.update(kw)
@@ -86,10 +132,12 @@ def test_no_namespace_selector_means_all_records():
     assert _resolve_namespace(_args(), ["a", "b"]) is None
 
 
-def test_parser_defaults_match_documented_behaviour():
-    args = _build_parser().parse_args(["download", "--corpus", "c.json", "--out", "o"])
+@pytest.mark.parametrize("argv", [["download", "--corpus", "c.json", "--out", "o"], ["search", "q"]])
+def test_parser_defaults_match_documented_behaviour(argv):
+    args = _build_parser().parse_args(argv)
     assert args.workers == 4
-    assert args.rps == 2.0
+    assert args.rps == 0.0  # the S3 bucket is not rate limited, so no pacing unless asked
+    assert isinstance(_build_limiter(args.rps, args.jitter), NullLimiter)
     assert args.retries == 4
     assert args.flat is False
 
@@ -118,22 +166,17 @@ def test_malformed_corpus_is_a_clean_error(tmp_path, capsys):
 
 
 @pytest.fixture
-def search_cli(monkeypatch):
+def search_cli(monkeypatch, fake_downloads):
     """`pmcfetch search` wired to a fake NCBI and a fake downloader; records what each saw."""
-    seen = {"search_kwargs": None, "records": None}
+    seen = fake_downloads
+    seen["search_kwargs"] = None
     fake = FakeESearch([11, 22, 33, 44, 55])
 
     def _search(**kwargs):
         seen["search_kwargs"] = kwargs
         return PMCSearch(http_get=fake, limiter=NullLimiter(), sleep=lambda s: None)
 
-    def _download_many(records, dest_root, **kwargs):
-        seen["records"] = list(records)
-        seen["dest_root"] = dest_root
-        return BatchReport([DownloadResult(r.pmcid, Outcome.DOWNLOADED) for r in records])
-
     monkeypatch.setattr(cli, "PMCSearch", _search)
-    monkeypatch.setattr(cli, "download_many", _download_many)
     monkeypatch.setattr(cli, "_interactive", lambda: False)
     monkeypatch.delenv("NCBI_API_KEY", raising=False)
     monkeypatch.delenv("NCBI_EMAIL", raising=False)
@@ -152,8 +195,10 @@ def test_search_download_n_fetches_the_first_n(search_cli, tmp_path, capsys):
     rc = main(["search", "burn", "--download", "2", "--out", str(tmp_path), "--json"])
     assert rc == 0
     assert len(search_cli["records"]) == 2
-    summary = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)  # progress lines must not leak into the JSON
     assert (summary["query"], summary["matches"], summary["downloaded"]) == ("burn", 5, 2)
+    assert "[2/2] ok" in captured.err
 
 
 def test_search_download_all_and_save(search_cli, tmp_path):
@@ -164,6 +209,37 @@ def test_search_download_all_and_save(search_cli, tmp_path):
     loaded = load_records(saved)
     assert sorted(r.pmcid for r in loaded.records) == ["PMC11", "PMC22", "PMC33", "PMC44", "PMC55"]
     assert {r.namespace for r in loaded.records} == {"burns"}
+
+
+def test_search_save_without_download_saves_every_match_and_downloads_none(search_cli, tmp_path, capsys):
+    saved = tmp_path / "burns.json"
+    assert main(["search", "burn", "--namespace", "burns", "--save", str(saved)]) == 0
+    assert search_cli["records"] is None
+    loaded = load_records(saved)
+    assert sorted(r.pmcid for r in loaded.records) == ["PMC11", "PMC22", "PMC33", "PMC44", "PMC55"]
+    assert {r.namespace for r in loaded.records} == {"burns"}
+    out = capsys.readouterr().out
+    assert "pmcfetch download --corpus" in out and str(saved) in out
+
+
+def test_search_save_without_download_does_not_ask(search_cli, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("asked how many to download"))
+    assert main(["search", "burn", "--save", str(tmp_path / "ids.json")]) == 0
+    assert search_cli["records"] is None
+    assert len(load_records(tmp_path / "ids.json").records) == 5
+
+
+def test_search_save_writes_a_file_even_with_no_matches(search_cli, monkeypatch, tmp_path, capsys):
+    empty = FakeESearch([])
+    monkeypatch.setattr(
+        cli, "PMCSearch", lambda **kw: PMCSearch(http_get=empty, limiter=NullLimiter(), sleep=lambda s: None)
+    )
+    saved = tmp_path / "ids.json"
+    assert main(["search", "nothing", "--save", str(saved), "--json"]) == 0
+    info = json.loads(capsys.readouterr().out)
+    assert (info["matches"], info["saved"]) == (0, 0)
+    assert len(load_records(saved).records) == 0
 
 
 def test_search_asks_how_many_in_a_terminal(search_cli, monkeypatch, tmp_path):

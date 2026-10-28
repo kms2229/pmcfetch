@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
+from typing import TextIO
 
 from pmcfetch import __version__
-from pmcfetch.batch import DownloadResult, FailureLog, Outcome, download_many, target_path
+from pmcfetch.batch import BatchReport, DownloadResult, FailureLog, Outcome, download_many, target_path
 from pmcfetch.pdf import DEFAULT_MIN_PDF_BYTES, DEFAULT_TIMEOUT
 from pmcfetch.errors import PMCFetchError
 from pmcfetch.manifest import DEFAULT_NAMESPACE, CorpusRecord, load_records, save_records
@@ -25,10 +27,10 @@ def _add_fetch_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--rps",
         type=float,
-        default=2.0,
+        default=0.0,
         help=(
             "Max outbound requests per second across all workers. The PMC S3 bucket "
-            "is not rate limited, so 0 disables pacing entirely (default 2.0)"
+            "is not rate limited, so the default 0 disables pacing entirely"
         ),
     )
     p.add_argument(
@@ -48,7 +50,7 @@ def _add_fetch_options(p: argparse.ArgumentParser) -> None:
         help="Resume on file size alone, skipping the %%PDF magic re-check",
     )
     p.add_argument("--failed-log", default=None, help="Append failures here")
-    p.add_argument("--json", action="store_true", help="Print the summary as JSON")
+    p.add_argument("--json", action="store_true", help="Print the summary as JSON (progress goes to stderr)")
     p.add_argument("--quiet", action="store_true", help="Suppress per-article progress")
 
 
@@ -73,7 +75,7 @@ def _amount_arg(text: str) -> int | str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pmcfetch",
-        description="Download open-access PDFs from the PMC Open Access Subset on AWS.",
+        description="Search the PMC Open Access Subset and download its article PDFs from AWS.",
     )
     parser.add_argument("--version", action="version", version=f"pmcfetch {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -116,7 +118,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "How many to download, without asking. If omitted, an interactive "
-            "terminal asks after showing the count; otherwise only the count is printed"
+            "terminal asks after showing the count, a script only prints it, and "
+            "--save saves every match without downloading"
         ),
     )
     se.add_argument("--out", default="pdfs", help="Output root directory (default pdfs)")
@@ -135,7 +138,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--save",
         metavar="FILE",
         default=None,
-        help="Also write the chosen ids to a corpus JSON file that 'pmcfetch download' reads",
+        help=(
+            "Write the chosen ids to a corpus JSON file that 'pmcfetch download' reads. "
+            "Without --download, every match is saved and none downloaded"
+        ),
     )
     se.add_argument(
         "--api-key",
@@ -197,6 +203,11 @@ def _cmd_namespaces(args: argparse.Namespace) -> int:
     return 0
 
 
+def _text_out(args: argparse.Namespace) -> TextIO:
+    """Where human-readable lines go: stderr under ``--json``, so stdout carries only JSON."""
+    return sys.stderr if args.json else sys.stdout
+
+
 def _run_downloads(
     records: list[CorpusRecord],
     args: argparse.Namespace,
@@ -206,10 +217,13 @@ def _run_downloads(
     """Download *records* with the shared fetch options and print the summary."""
     if not records:
         print("[pmcfetch] nothing to do", file=sys.stderr)
+        if args.json:
+            print(json.dumps({**(extra or {}), "namespace": label, **BatchReport([]).as_dict()}, indent=2))
         return 0
 
     limiter = _build_limiter(args.rps, args.jitter)
     failure_log = FailureLog(args.failed_log) if args.failed_log else None
+    out = _text_out(args)
 
     def _progress(res: DownloadResult, i: int, total: int) -> None:
         if args.quiet:
@@ -220,7 +234,7 @@ def _run_downloads(
             Outcome.FAILED: "FAIL",
         }[res.outcome]
         suffix = f"  {res.reason}" if res.outcome is Outcome.FAILED else ""
-        print(f"[{i}/{total}] {mark} {res.pmcid}{suffix}", flush=True)
+        print(f"[{i}/{total}] {mark} {res.pmcid}{suffix}", file=out, flush=True)
 
     from pmcfetch.s3source import S3OpenAccessClient
 
@@ -270,9 +284,14 @@ def _cmd_download(args: argparse.Namespace) -> int:
 
     label = namespace or "ALL"
     if not args.quiet:
-        print(f"[pmcfetch] corpus={args.corpus} namespace={label} n={len(records)}")
+        print(f"[pmcfetch] corpus={args.corpus} namespace={label} n={len(records)}", file=_text_out(args))
 
     if args.dry_run:
+        if args.json:
+            plan = [{"pmcid": rec.pmcid, "namespace": rec.namespace} for rec in records]
+            summary = {"namespace": label, "dry_run": True, "total": len(records), "would_fetch": plan}
+            print(json.dumps(summary, indent=2))
+            return 0
         for rec in records[:20]:
             print(f"  would fetch {rec.pmcid}  -> {rec.namespace}/")
         if len(records) > 20:
@@ -322,7 +341,10 @@ def _cmd_search(args: argparse.Namespace) -> int:
     for warning in summary.warnings:
         print(f"[pmcfetch] warning: {warning}", file=sys.stderr)
 
-    amount = args.download
+    # --save without --download keeps every match and downloads none, so the
+    # list can go to `pmcfetch download` later, e.g. in an HPC array job.
+    save_only = args.download is None and args.save is not None
+    amount = ALL if save_only else args.download
     if amount is None and summary.count and not args.json and _interactive():
         amount = _ask_amount(summary.count)
     if amount is None:
@@ -333,30 +355,38 @@ def _cmd_search(args: argparse.Namespace) -> int:
         return 0
 
     limit = None if amount == ALL else min(int(amount), summary.count)
-    if limit == 0 or summary.count == 0:
+    records: list[CorpusRecord] = []
+    if limit != 0 and summary.count:
+        if args.sort == "relevance" and (limit or summary.count) > MAX_IDS_PER_QUERY and not args.quiet:
+            print(
+                f"[pmcfetch] note: NCBI ranks only the first {MAX_IDS_PER_QUERY:,} by relevance; "
+                "the rest follow newest first",
+                file=sys.stderr,
+            )
+
+        def _id_progress(collected: int, wanted: int) -> None:
+            if not args.quiet:
+                print(f"[pmcfetch] collecting ids: {collected:,}/{wanted:,}", file=sys.stderr, flush=True)
+
+        records = search.records(
+            args.query, limit=limit, sort=args.sort, namespace=args.namespace, progress=_id_progress
+        )
+
+    chatty = not (args.quiet or args.json)
+    if args.save is not None:
+        # Written even when empty, so a script that asked for a file always gets one.
+        path = save_records(records, args.save)
+        info.update(saved=len(records), saved_to=str(path))
+        if chatty:
+            print(f"[pmcfetch] saved {len(records):,} id(s) to {path}")
+            if save_only and records:
+                cmd = f"pmcfetch download --corpus {shlex.quote(str(path))} --out {shlex.quote(args.out)}"
+                print(f"[pmcfetch] to download them: {cmd}")
+    if save_only or not records:
         if args.json:
             print(json.dumps(info, indent=2))
         return 0
-    if args.sort == "relevance" and (limit or summary.count) > MAX_IDS_PER_QUERY and not args.quiet:
-        print(
-            f"[pmcfetch] note: NCBI ranks only the first {MAX_IDS_PER_QUERY:,} by relevance; "
-            "the rest follow newest first",
-            file=sys.stderr,
-        )
-
-    def _id_progress(collected: int, wanted: int) -> None:
-        if not args.quiet:
-            print(f"[pmcfetch] collecting ids: {collected:,}/{wanted:,}", file=sys.stderr, flush=True)
-
-    records = search.records(
-        args.query, limit=limit, sort=args.sort, namespace=args.namespace, progress=_id_progress
-    )
-    chatty = not (args.quiet or args.json)
-    if args.save:
-        path = save_records(records, args.save)
-        if chatty:
-            print(f"[pmcfetch] saved {len(records):,} id(s) to {path}")
-    if records and chatty:
+    if chatty:
         folder = target_path(args.out, records[0], by_namespace=not args.flat).parent
         print(f"[pmcfetch] downloading {len(records):,} article(s) to {folder}/")
     return _run_downloads(records, args, args.namespace, extra=info)
