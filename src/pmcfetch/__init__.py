@@ -8,7 +8,9 @@ and it is the access route PMC sanctions for systematic retrieval.
 care about. This package fills that gap: give it a list of PMC ids and it
 resolves each article's version, picks the article PDF (not the publisher's
 supplementary PDFs sitting in the same prefix), and writes the results with
-resume, retries, atomic writes, and per-namespace layout.
+resume, retries, atomic writes, and per-namespace layout. Or start from a
+keyword search: :class:`PMCSearch` counts the matching open-access articles
+before anything is downloaded.
 
 Zero third-party dependencies.
 
@@ -40,10 +42,11 @@ from pmcfetch.errors import (
     InvalidPMCIDError,
     NotAPDFError,
     PMCFetchError,
+    SearchError,
     TransportError,
 )
 from pmcfetch.ids import normalize_pmcid, try_normalize_pmcid
-from pmcfetch.manifest import CorpusRecord, LoadResult, iter_records, load_records
+from pmcfetch.manifest import CorpusRecord, LoadResult, iter_records, load_records, save_records
 from pmcfetch.pdf import DEFAULT_MIN_PDF_BYTES, DEFAULT_TIMEOUT, PdfSource, is_pdf
 from pmcfetch.ratelimit import MinIntervalLimiter, NullLimiter
 from pmcfetch.s3source import (
@@ -56,9 +59,13 @@ from pmcfetch.s3source import (
     list_article_versions,
     resolve_latest_version,
 )
+from pmcfetch.search import PMCSearch, SearchSummary
 
 __all__ = [
     "__version__",
+    # search
+    "PMCSearch",
+    "SearchSummary",
     # source
     "S3OpenAccessClient",
     "OA_BUCKET",
@@ -77,6 +84,7 @@ __all__ = [
     "write_pdf_atomic",
     # manifest
     "load_records",
+    "save_records",
     "iter_records",
     "CorpusRecord",
     "LoadResult",
@@ -99,4 +107,5 @@ __all__ = [
     "ArticleNotInOASubsetError",
     "InvalidPMCIDError",
     "TransportError",
+    "SearchError",
 ]

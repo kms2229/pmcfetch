@@ -1,10 +1,13 @@
 # pmcfetch
 
 Targeted PDF retrieval from the **PMC Open Access Subset**, with resume, retries,
-atomic writes, and namespace-aware batch layout. Zero dependencies.
+atomic writes, and namespace-aware batch layout. Start from a list of PMC ids,
+or from a keyword search. Zero dependencies.
 
 ```bash
 pip install pmcfetch
+pmcfetch search "burn scar"                      # how many open-access papers match?
+pmcfetch search "burn scar" --download 50        # fetch the 50 most relevant
 pmcfetch download --corpus corpus.json --out pdfs/ --workers 16 --rps 0
 ```
 
@@ -65,9 +68,30 @@ with S3OpenAccessClient() as c:
 `license_code` and `is_retracted` come free with every article — filter on licence
 terms and drop retracted papers before they reach your corpus.
 
+Keyword search — check the count first, then take as many as you want:
+
+```python
+from pmcfetch import PMCSearch, S3OpenAccessClient, download_many
+
+search = PMCSearch()                    # PMCSearch(api_key=...) for NCBI's higher rate limit
+summary = search.summarize("burn scar AND 2020:2025[pdat]")
+print(summary.count, summary.warnings)  # 12013 ()
+
+records = search.records(summary.query, limit=100, namespace="burns")   # limit=None for all
+with S3OpenAccessClient() as client:
+    report = download_many(records, "pdfs/", client=client, workers=16)
+```
+
 ## CLI
 
 ```bash
+# how many open-access papers match? (in a terminal, it then asks how many to download)
+pmcfetch search "wound healing AND diabetic foot"
+
+# download some or all of them, without the question
+pmcfetch search "burn scar" --download 100 --out pdfs/ --rps 0
+pmcfetch search "burn scar" --download all --namespace burns --save burns.json --rps 0
+
 # what's in a corpus file?
 pmcfetch namespaces --corpus corpus.json
 
@@ -87,6 +111,12 @@ unreadable corpus file exit `2`, and Ctrl-C exits `130`.
 
 S3 has no rate limit, so `--rps 0` switches pacing off entirely (`--jitter` then
 has no effect) and `--workers` can go wide; throughput is bound by your bandwidth.
+
+`search` takes PMC's search syntax: field tags (`smith j[author]`), date ranges
+(`2020:2025[pdat]`), `AND`/`OR`/`NOT`. It prints how NCBI read the query and warns
+about words it dropped. `--sort relevance` (the default) or `--sort newest` picks
+which papers come first when you take fewer than all, and `--save` writes the
+chosen ids to a corpus file for `pmcfetch download`, for example in an HPC array job.
 
 ## Deployment
 
@@ -134,6 +164,17 @@ bad key can't abort a 20k-article batch.
   raise `ArticleNotInOASubsetError`. Both land in the failure log with a reason.
 - **Any object implementing `fetch_pdf(pmcid) -> bytes`** satisfies the
   `PdfSource` protocol and works with `download_many`.
+- **Search counts only open-access articles** (`"open access"[filter]`), the
+  ones the bucket holds with their PDFs. Around 99% of them have an article PDF;
+  the rest fail with `PDFNotAvailableError` like any other run.
+- **Search has no 10,000 cap.** NCBI returns at most 9,999 ids per query, so
+  larger result sets are collected by splitting the query into PMC id ranges.
+  NCBI ranks only the first 9,999 by relevance; the rest follow newest first.
+- **Search goes through NCBI E-utilities**, which allow 3 requests per second,
+  or 10 with an NCBI API key from your
+  [NCBI account settings](https://account.ncbi.nlm.nih.gov/settings/)
+  (`--api-key`, or `$NCBI_API_KEY`). Collecting 20,000 ids takes about 15 seconds.
+  NCBI's count can drift by a few between calls.
 
 ## Tests
 
@@ -145,7 +186,8 @@ python -m pytest tests/ -q
 No network required — the S3 layer is exercised against scripted listings and
 responses: multi-version and paginated listings, supplementary-PDF
 disambiguation, 429 storms and `Retry-After`, 404s, truncated resumes, and
-concurrent and interrupted batches.
+concurrent and interrupted batches. Search runs against a scripted ESearch that
+enforces NCBI's per-query cap, so the id-range splitting is tested too.
 
 ## Attribution
 

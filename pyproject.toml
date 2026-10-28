@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pmcfetch"
 dynamic = ["version"]
-description = "Targeted PDF retrieval from the PMC Open Access Subset on AWS. Zero dependencies."
+description = "Search the PMC Open Access Subset by keyword and download article PDFs from AWS. Zero dependencies."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

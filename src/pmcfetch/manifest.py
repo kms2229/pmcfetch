@@ -151,10 +151,20 @@ def _load_id_list(path: Path, *, default_namespace: str) -> LoadResult:
     return result
 
 
+def save_records(records: Iterable[CorpusRecord], path: str | Path) -> Path:
+    """Write *records* as an assignment-map corpus file that :func:`load_records` reads back."""
+    p = Path(path).expanduser()
+    data = {r.pmcid: {"metadata": {"namespace": r.namespace}} for r in records}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    return p
+
+
 __all__ = [
     "DEFAULT_NAMESPACE",
     "CorpusRecord",
     "LoadResult",
     "iter_records",
     "load_records",
+    "save_records",
 ]

@@ -1,6 +1,6 @@
 import json
 
-from pmcfetch.manifest import CorpusRecord, load_records
+from pmcfetch.manifest import CorpusRecord, load_records, save_records
 
 ASSIGNMENTS = {
     "10007932": {"metadata": {"namespace": "cardiology"}},
@@ -78,3 +78,15 @@ def test_namespace_falls_back_to_top_level_key(tmp_path):
     assert loaded.records == [
         CorpusRecord(pmcid="PMC1", namespace="virology", source_key="1")
     ]
+
+
+def test_saved_records_load_back_with_their_namespaces(tmp_path):
+    records = [CorpusRecord("PMC2", "burns"), CorpusRecord("PMC1", "burns"), CorpusRecord("PMC3")]
+    path = save_records(records, tmp_path / "sub" / "corpus.json")
+    loaded = load_records(path)
+    assert [(r.pmcid, r.namespace) for r in loaded.records] == [
+        ("PMC2", "burns"),
+        ("PMC1", "burns"),
+        ("PMC3", "general"),
+    ]
+    assert loaded.skipped == []

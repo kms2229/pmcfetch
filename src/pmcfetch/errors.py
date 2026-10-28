@@ -51,6 +51,10 @@ class TransportError(DownloadError):
     retryable = True
 
 
+class SearchError(PMCFetchError):
+    """NCBI rejected a search, or a search could not be completed."""
+
+
 __all__ = [
     "PMCFetchError",
     "InvalidPMCIDError",
@@ -58,4 +62,5 @@ __all__ = [
     "HTTPStatusError",
     "NotAPDFError",
     "TransportError",
+    "SearchError",
 ]

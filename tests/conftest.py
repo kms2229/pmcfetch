@@ -1,4 +1,7 @@
+import json
+import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -37,6 +40,52 @@ class FakeSource:
 
     def close(self) -> None:
         self.closed = True
+
+
+def relevance_order(uids):
+    """The fake's "relevance" ranking: any fixed order that differs from newest first."""
+    return sorted(uids, key=lambda u: ((u * 7919) % 1009, u))
+
+
+class FakeESearch:
+    """Scripted NCBI ESearch endpoint over a fixed set of PMC uids.
+
+    Mirrors what pmcfetch relies on: ``lo:hi[uid]`` narrows the set,
+    ``sort=relevance`` changes the order, the default order is newest (highest
+    uid) first, and one query yields at most ``cap`` ids. *fail_first* items
+    are returned (bytes) or raised (exceptions) before any normal response.
+    """
+
+    def __init__(self, uids, *, cap=9999, fail_first=()):
+        self.uids = sorted(set(uids))
+        self.cap = cap
+        self.failures = list(fail_first)
+        self.calls: list[dict[str, str]] = []
+
+    def __call__(self, url: str, *, timeout: float = 0.0) -> bytes:  # noqa: ARG002
+        params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        self.calls.append(params)
+        if self.failures:
+            item = self.failures.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        if int(params.get("retstart", 0)) > self.cap - 1 or int(params["retmax"]) > self.cap:
+            return json.dumps({"esearchresult": {"ERROR": "retstart/retmax past the cap"}}).encode()
+        m = re.search(r" AND (\d+):(\d+)\[uid\]$", params["term"])
+        hits = [u for u in self.uids if not m or int(m.group(1)) <= u <= int(m.group(2))]
+        hits = relevance_order(hits) if params.get("sort") == "relevance" else sorted(hits, reverse=True)
+        ids = hits[: int(params["retmax"])]
+        return json.dumps(
+            {
+                "esearchresult": {
+                    "count": str(len(hits)),
+                    "idlist": [str(u) for u in ids],
+                    "querytranslation": params["term"],
+                }
+            }
+        ).encode()
 
 
 @pytest.fixture
